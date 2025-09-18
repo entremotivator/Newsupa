@@ -36,12 +36,12 @@ def signup(email, password, role="user"):
             {
                 "email": email,
                 "password": password,
-            },
-            {
-                "data": {
-                    "role": role,  # store role with user metadata
-                }
-            },
+                "options": {
+                    "data": {
+                        "role": role,
+                    },
+                },
+            }
         )
         if res.user:
             return (
@@ -60,7 +60,6 @@ def login(email, password):
     try:
         res = supabase.auth.sign_in_with_password({"email": email, "password": password})
         if res.user:
-            # Prevent login if email is not verified
             if not res.user.email_confirmed_at:
                 return False, "⚠️ Please verify your email before logging in."
 
@@ -203,7 +202,6 @@ def main():
 
     else:
         redirect_dashboard()
-
 
 if __name__ == "__main__":
     main()
