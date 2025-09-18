@@ -160,7 +160,7 @@ def main():
                         success, msg = login(login_email, login_password)
                         if success:
                             st.success(msg)
-                            st.experimental_rerun()
+                            st.rerun()
                         else:
                             st.error(msg)
                     else:
