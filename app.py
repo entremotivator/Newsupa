@@ -30,21 +30,17 @@ if "page" not in st.session_state:
 # -------------------------
 # Signup Function (No Strong Password)
 # -------------------------
-def signup(email, password, role="user", first_name="", last_name=""):
+def signup(email, password, role="user"):
     if len(password) < 6:
         return False, "⚠️ Password must be at least 6 characters long."
     try:
         res = supabase.auth.sign_up({"email": email, "password": password})
         if res.user:
+            # Only insert basic required fields that exist in your schema
             supabase.table("user_profiles").insert({
                 "id": res.user.id,
                 "email": email,
-                "role": role,
-                "first_name": first_name,
-                "last_name": last_name,
-                "created_at": datetime.now().isoformat(),
-                "last_login": None,
-                "status": "active"
+                "role": role
             }).execute()
             return True, "✅ Account created! Please log in."
         return False, str(res)
@@ -61,10 +57,6 @@ def login(email, password):
             profile = supabase.table("user_profiles").select("*").eq("id", res.user.id).execute()
             if profile.data:
                 role = profile.data[0]["role"]
-                # Update last login
-                supabase.table("user_profiles").update({
-                    "last_login": datetime.now().isoformat()
-                }).eq("id", res.user.id).execute()
             else:
                 role = "user"
             
@@ -110,25 +102,11 @@ def get_user_analytics():
     
     # Basic stats
     total_users = len(df)
-    active_users = len(df[df['status'] == 'active'])
     admin_users = len(df[df['role'] == 'admin'])
-    
-    # Recent signups (last 30 days)
-    df['created_at'] = pd.to_datetime(df['created_at'])
-    thirty_days_ago = datetime.now() - timedelta(days=30)
-    recent_signups = len(df[df['created_at'] > thirty_days_ago])
-    
-    # Users with recent logins (last 7 days)
-    df['last_login'] = pd.to_datetime(df['last_login'], errors='coerce')
-    seven_days_ago = datetime.now() - timedelta(days=7)
-    recent_logins = len(df[df['last_login'] > seven_days_ago])
     
     return {
         'total_users': total_users,
-        'active_users': active_users,
         'admin_users': admin_users,
-        'recent_signups': recent_signups,
-        'recent_logins': recent_logins,
         'df': df
     }
 
@@ -206,25 +184,21 @@ def admin_overview():
     
     analytics = get_user_analytics()
     if analytics:
-        col1, col2, col3, col4, col5 = st.columns(5)
+        col1, col2, col3 = st.columns(3)
         
         with col1:
             st.metric("Total Users", analytics['total_users'])
         with col2:
-            st.metric("Active Users", analytics['active_users'])
-        with col3:
             st.metric("Admin Users", analytics['admin_users'])
-        with col4:
-            st.metric("Recent Signups (30d)", analytics['recent_signups'])
-        with col5:
-            st.metric("Recent Logins (7d)", analytics['recent_logins'])
+        with col3:
+            st.metric("Regular Users", analytics['total_users'] - analytics['admin_users'])
         
-        # Recent user activity
-        st.subheader("🕐 Recent User Activity")
-        df = analytics['df'].copy()
-        df['last_login'] = pd.to_datetime(df['last_login'], errors='coerce')
-        recent_activity = df.nlargest(10, 'last_login')[['email', 'role', 'last_login', 'status']]
-        st.dataframe(recent_activity, use_container_width=True)
+        # Show all users
+        st.subheader("👥 All Users")
+        df = analytics['df']
+        # Only show columns that exist in your schema
+        display_df = df[['email', 'role']].copy()
+        st.dataframe(display_df, use_container_width=True)
     else:
         st.info("No user data available yet.")
 
@@ -254,13 +228,12 @@ def admin_user_management():
         
         # User management table
         for idx, user in filtered_df.iterrows():
-            with st.expander(f"👤 {user['email']} ({user['role']}) - {user['status']}"):
+            with st.expander(f"👤 {user['email']} ({user['role']})"):
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
-                    st.write(f"**Name:** {user.get('first_name', '')} {user.get('last_name', '')}")
-                    st.write(f"**Created:** {user['created_at'][:10] if user['created_at'] else 'N/A'}")
-                    st.write(f"**Last Login:** {user['last_login'][:10] if user['last_login'] else 'Never'}")
+                    st.write(f"**Email:** {user['email']}")
+                    st.write(f"**User ID:** {user['id'][:8]}...")
                 
                 with col2:
                     new_role = st.selectbox(
@@ -278,20 +251,6 @@ def admin_user_management():
                             st.error(msg)
                 
                 with col3:
-                    new_status = st.selectbox(
-                        "Status", 
-                        ["active", "inactive", "suspended"], 
-                        index=["active", "inactive", "suspended"].index(user.get('status', 'active')),
-                        key=f"status_{user['id']}"
-                    )
-                    if st.button("Update Status", key=f"update_status_{user['id']}"):
-                        success, msg = update_user_status(user['id'], new_status)
-                        if success:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                    
                     # Delete user button (with confirmation)
                     if st.button("🗑️ Delete User", key=f"delete_{user['id']}", type="secondary"):
                         if st.session_state.get(f"confirm_delete_{user['id']}", False):
@@ -315,50 +274,18 @@ def admin_analytics():
     if analytics and len(analytics['df']) > 0:
         df = analytics['df'].copy()
         
-        # User registration trends
-        st.subheader("User Registration Trends")
-        df['created_at'] = pd.to_datetime(df['created_at'])
-        df['registration_date'] = df['created_at'].dt.date
-        registration_counts = df.groupby('registration_date').size().reset_index(name='new_users')
-        
-        fig_reg = px.line(registration_counts, x='registration_date', y='new_users', 
-                         title='Daily User Registrations')
-        st.plotly_chart(fig_reg, use_container_width=True)
-        
         # Role distribution
-        col1, col2 = st.columns(2)
+        st.subheader("User Role Distribution")
+        role_counts = df['role'].value_counts()
+        fig_roles = px.pie(values=role_counts.values, names=role_counts.index, 
+                          title='User Roles')
+        st.plotly_chart(fig_roles, use_container_width=True)
         
-        with col1:
-            st.subheader("User Role Distribution")
-            role_counts = df['role'].value_counts()
-            fig_roles = px.pie(values=role_counts.values, names=role_counts.index, 
-                              title='User Roles')
-            st.plotly_chart(fig_roles)
+        # Simple user table
+        st.subheader("All Users")
+        display_df = df[['email', 'role']].copy()
+        st.dataframe(display_df, use_container_width=True)
         
-        with col2:
-            st.subheader("User Status Distribution")
-            status_counts = df['status'].value_counts()
-            fig_status = px.pie(values=status_counts.values, names=status_counts.index, 
-                               title='User Status')
-            st.plotly_chart(fig_status)
-        
-        # Login activity (for users who have logged in)
-        df['last_login'] = pd.to_datetime(df['last_login'], errors='coerce')
-        logged_in_users = df.dropna(subset=['last_login'])
-        
-        if not logged_in_users.empty:
-            st.subheader("Login Activity (Last 30 Days)")
-            thirty_days_ago = datetime.now() - timedelta(days=30)
-            recent_logins = logged_in_users[logged_in_users['last_login'] > thirty_days_ago]
-            
-            if not recent_logins.empty:
-                recent_logins['login_date'] = recent_logins['last_login'].dt.date
-                login_counts = recent_logins.groupby('login_date').size().reset_index(name='logins')
-                fig_logins = px.bar(login_counts, x='login_date', y='logins',
-                                   title='Daily Login Activity')
-                st.plotly_chart(fig_logins, use_container_width=True)
-            else:
-                st.info("No login activity in the last 30 days")
     else:
         st.info("Not enough data for analytics")
 
@@ -405,33 +332,12 @@ def user_profile():
     
     profile = get_user_profile(st.session_state.user.id)
     if profile:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("**Account Information**")
-            st.write(f"Email: {profile['email']}")
-            st.write(f"Role: {profile['role'].title()}")
-            st.write(f"Status: {profile.get('status', 'active').title()}")
-            st.write(f"Member since: {profile['created_at'][:10] if profile['created_at'] else 'N/A'}")
-            st.write(f"Last login: {profile['last_login'][:10] if profile['last_login'] else 'Never'}")
-        
-        with col2:
-            st.write("**Personal Information**")
-            with st.form("profile_form"):
-                first_name = st.text_input("First Name", value=profile.get('first_name', ''))
-                last_name = st.text_input("Last Name", value=profile.get('last_name', ''))
-                
-                if st.form_submit_button("Update Profile"):
-                    updates = {
-                        'first_name': first_name,
-                        'last_name': last_name
-                    }
-                    success, msg = update_user_profile(st.session_state.user.id, updates)
-                    if success:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
+        st.write("**Account Information**")
+        st.write(f"Email: {profile['email']}")
+        st.write(f"Role: {profile['role'].title()}")
+        st.write(f"User ID: {profile['id'][:8]}...")
+    else:
+        st.error("Could not load profile information")
 
 def user_account_settings():
     """User account settings"""
@@ -463,21 +369,14 @@ def user_activity():
     
     profile = get_user_profile(st.session_state.user.id)
     if profile:
-        st.write("**Account Activity**")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Days as Member", 
-                     (datetime.now() - pd.to_datetime(profile['created_at'])).days if profile['created_at'] else 0)
-        with col2:
-            last_login = profile['last_login']
-            if last_login:
-                days_since_login = (datetime.now() - pd.to_datetime(last_login)).days
-                st.metric("Days Since Last Login", days_since_login)
-            else:
-                st.metric("Days Since Last Login", "Never")
+        st.write("**Account Information**")
+        st.write(f"Email: {profile['email']}")
+        st.write(f"Role: {profile['role'].title()}")
+        st.write(f"Account ID: {profile['id'][:8]}...")
         
         st.info("🚧 More detailed activity tracking coming soon!")
+    else:
+        st.error("Could not load activity information")
 
 # -------------------------
 # Redirect Logged-in Users
@@ -528,14 +427,8 @@ def main():
         with tab2:
             st.subheader("📝 Create Account")
             with st.form("signup_form"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    first_name = st.text_input("First Name")
-                    signup_email = st.text_input("Email")
-                with col2:
-                    last_name = st.text_input("Last Name")
-                    signup_password = st.text_input("Password", type="password")
-                
+                signup_email = st.text_input("Email")
+                signup_password = st.text_input("Password", type="password")
                 role = st.selectbox("Account Type", ["user", "admin"], 
                                   help="Select 'admin' for administrative privileges")
                 
@@ -543,7 +436,7 @@ def main():
                 
                 if submit:
                     if signup_email and signup_password:
-                        success, msg = signup(signup_email, signup_password, role, first_name, last_name)
+                        success, msg = signup(signup_email, signup_password, role)
                         if success:
                             st.success(msg)
                         else:
